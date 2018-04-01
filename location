@@ -1,0 +1,251 @@
+#include<opencv2/core/core.hpp>
+#include<opencv2/imgproc/imgproc.hpp>
+#include <opencv2/opencv.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <iostream>
+#include <cmath>
+#include <stdio.h>
+#include <cv.h>
+#include <windows.h>   
+
+using namespace std;
+using namespace cv;
+
+//设定全局变量
+IplImage* src = NULL;
+Mat src_gray;
+int thresh = 30;
+int max_thresh = 255;
+double ha, va;//横向和纵向最大视角
+Mat camera_matrix = Mat(3, 3, CV_32FC1);//相机内参矩阵
+Mat distortion_coefficients;//畸变系数矩阵
+double image_Width;//分辨率长度
+double image_Height;//分辨率宽度
+double angle = 0;//在图像上显示角度
+
+//红色过滤
+Mat colorMatch(const Mat &src, Mat &match, const bool adaptive_minsv);
+
+int main(int argc, char** argv)
+{
+	//获取横向和纵向最大视角
+	cout << "The largest horizontal angle of view(radian)" << endl;
+	//cin >> ha;//0.7156
+	ha = 0.7156;
+	cout << "The largest vertical angle of view(radian)" << endl;
+	//cin >> va;//0.5367
+	va = 0.5367;
+
+
+	//导入 相机内参矩阵  畸变系数矩阵  分辨率
+	FileStorage file_storage("out_camera_data.xml", FileStorage::READ);
+	file_storage["Camera_Matrix"] >> camera_matrix;
+	file_storage["Distortion_Coefficients"] >> distortion_coefficients;
+	file_storage["image_Width"] >> image_Width;
+	file_storage["image_Height"] >> image_Height;
+	file_storage.release();
+
+
+	//获取摄像头    
+	VideoCapture capture(1);//锁定摄像头ID
+	if (!capture.isOpened())
+		cout << "fail to open!" << endl;
+	//声明导入格式
+	Mat srcs;
+
+	//初始化角度
+
+
+	//打开摄像头   
+	while (1)
+	{
+
+
+		//摄像头读入Mat
+		capture >> srcs;
+
+		//拷贝摄像头传输数据
+		Mat distortion = srcs.clone();
+
+		//矫正
+		undistort(srcs, distortion, camera_matrix, distortion_coefficients);
+		//读入图像并进行过滤噪声
+		src_gray = colorMatch(distortion, src_gray, true);//灰度化
+		blur(src_gray, src_gray, Size(3, 3)); //滤波       
+//定义Canny边缘检测图像       
+	Mat canny_output;
+	vector<vector<Point> > contours;
+	vector<Vec4i> hierarchy;
+	//利用canny算法检测边缘       
+	Canny(src_gray, canny_output, thresh, thresh * 3, 3);
+	imshow("canny", canny_output);
+	//查找轮廓    
+	findContours(canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+	//计算轮廓矩       
+	vector<Moments> mu(contours.size());
+	for (int i = 0; i < contours.size(); i++)
+	{
+		mu[i] = moments(contours[i], false);
+	}
+	//计算轮廓的质心     
+	vector<Point2f> mc(contours.size());
+	for (int i = 0; i < contours.size(); i++)
+	{
+		mc[i] = Point2d(mu[i].m10 / mu[i].m00, mu[i].m01 / mu[i].m00);
+	}
+	double sx = 0, sy = 0;
+	for (int i = 0; i < contours.size(); i++)
+	{
+		if (mc[i].x > 0 && mc[i].y > 0)
+		{
+			sx += mc[i].x / contours.size();
+			sy += mc[i].y / contours.size();
+		}
+	}
+	//寻找鼠标指定点
+		double w = image_Width / 2 - (sx);//物体的横坐标与中心的距离
+		double h = image_Height / 2 - (sy);//物体的纵坐标与中心的距离
+		//测量
+		double visual_width, visual_height, xx, yy;//创建视角长宽，物体视角长宽
+		//计算
+		visual_width = sin(ha / 2);
+		visual_height = sin(va / 2);
+		xx = 2 * w*visual_width / image_Width;
+		yy = 2 * h*visual_height / image_Height;
+		angle = asin(sqrt(xx*xx + yy*yy));
+		//显示
+		//cout << "radian system" << endl
+		//	<< angle << endl
+		cout << "degree measure" << endl
+			<< (180 * angle / 3.1415926) << endl
+			<< "Next..." << endl;
+	
+	src = &IplImage(distortion); //读入图像 
+
+	cvNamedWindow("src", 1);//新建窗口  
+
+		//图片上显示文字
+		CvFont  font;
+		cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX | CV_FONT_ITALIC, 1, 1, 0, 1);//初始化字体，准备写到图片上的   
+		char temp[16] = "angle : ";//设置输出值
+		sprintf(temp + 8, "%.4f", double(180 * angle / 3.1415926));
+		temp[15] = '\0';//截停
+		cvPutText(src, temp, cvPoint(400, 400), &font, CV_RGB(255, 0, 0));//在图片中输出字符   
+		cvShowImage("src", src);
+
+
+		char c = waitKey(100);//每100ms更新图片
+		if (c == 27)//按Esc键跳出循环
+			break;
+
+	}
+	return 0;
+}
+
+Mat colorMatch(const Mat &src, Mat &match,const bool adaptive_minsv) {
+
+	// if use adaptive_minsv  
+	// min value of s and v is adaptive to h  
+	const float max_sv = 255;
+	const float minref_sv = 64;
+
+	const float minabs_sv = 95; //95;  
+
+	Mat src_hsv;
+
+	// convert to HSV space  
+	cvtColor(src, src_hsv, CV_BGR2HSV);
+
+	std::vector<cv::Mat> hsvSplit;
+	split(src_hsv, hsvSplit);
+	equalizeHist(hsvSplit[2], hsvSplit[2]);
+	merge(hsvSplit, src_hsv);
+
+	// match to find the color  
+     //红色极值
+	int min_h = 160;
+	int max_h = 180;
+
+	float diff_h = float((max_h - min_h) / 2); //颜色范围间的差异/2  
+	float avg_h = min_h + diff_h; //颜色平均值  
+
+	int channels = src_hsv.channels();
+	int nRows = src_hsv.rows;
+
+	// consider multi channel image  
+	int nCols = src_hsv.cols * channels;
+	if (src_hsv.isContinuous()) {
+		nCols *= nRows;
+		nRows = 1;
+	}
+
+	int i, j;
+	uchar* p;
+	float s_all = 0;
+	float v_all = 0;
+	float count = 0;
+	for (i = 0; i < nRows; ++i) {
+		p = src_hsv.ptr<uchar>(i);
+		for (j = 0; j < nCols; j += 3) {
+			//H - 颜色 , S - 饱和度, V - 透明度
+			int H = int(p[j]);      // 0-180  
+			int S = int(p[j + 1]);  // 0-255  
+			int V = int(p[j + 2]);  // 0-255  
+
+			s_all += S;
+			v_all += V;
+			count++;
+
+			bool colorMatched = false;
+
+			if (H > min_h && H < max_h) {
+				float Hdiff = 0;
+				if (H > avg_h)
+					Hdiff = H - avg_h;
+				else
+					Hdiff = avg_h - H;
+
+				float Hdiff_p = float(Hdiff) / diff_h;
+
+				float min_sv = 0;
+				if (true == adaptive_minsv)
+					min_sv =
+					minref_sv -
+					minref_sv / 2 *
+					(1
+					- Hdiff_p);  // inref_sv - minref_sv / 2 * (1 - Hdiff_p)  
+				else
+					min_sv = minabs_sv;  // add  
+
+				if ((S > min_sv && S < max_sv) && (V > min_sv && V < max_sv))
+					colorMatched = true;
+			}
+
+			if (colorMatched == true) {
+				p[j] = 0;
+				p[j + 1] = 0;
+				p[j + 2] = 255;
+			}
+			else {
+				p[j] = 0;
+				p[j + 1] = 0;
+				p[j + 2] = 0;
+			}
+		}
+	}
+
+	// cout << "avg_s:" << s_all / count << endl;  
+	// cout << "avg_v:" << v_all / count << endl;  
+
+	// get the final binary  
+
+	Mat src_grey;
+	std::vector<cv::Mat> hsvSplit_done;
+	split(src_hsv, hsvSplit_done);
+	src_grey = hsvSplit_done[2];
+
+	match = src_grey;
+
+	return src_grey;
+}
